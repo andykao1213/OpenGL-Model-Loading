@@ -4,6 +4,7 @@
 #define MENU_TIMER_STOP 2
 #define MENU_EXIT 3
 
+/*----------Global----------*/
 GLubyte timer_cnt = 0;
 bool timer_enabled = true;
 unsigned int timer_speed = 16;
@@ -13,22 +14,44 @@ GLint um4p;
 GLint um4mv;
 GLuint tex_location;
 
+GLuint skybox_prog;
+GLuint tex_envmap;
+GLuint skybox_vao;
+
 using namespace glm;
 using namespace std;
 
 mat4 mv_matrix;
 mat4 proj_matrix;
+mat4 view_matrix;
+mat4 sky_view;
 
 GLfloat leftRight = -90.0f;
 GLfloat upDown = 0.0f;
 GLfloat lastX = 0.0f;
 GLfloat lastY = 0.0f;
+GLfloat sky_leftRight = -90.0f;
+GLfloat sky_upDown = 0.0f;
 
 vec3 cameraPosition (0.0f, 3.0f, 0.0f);
 vec3 cameraDirection (0.0f, 0.0f, -1.0f);
 vec3 cameraNormal (0.0f, 1.0f, 0.0f);
+vec3 sky_cameraDirection(0.0f, 0.0f, -1.0f);
 
 bool firstMouse = true;
+
+struct
+{
+	struct
+	{
+		GLint mv_matrix;
+		GLint proj_matrix;
+	} render;
+	struct
+	{
+		GLint view_matrix;
+	} skybox;
+} uniforms;
 
 struct Shape
 {
@@ -248,6 +271,37 @@ void My_Init()
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LEQUAL);
 
+	/*-----------skybox program---------------*/
+	skybox_prog = glCreateProgram();
+	GLuint skybox_frag = glCreateShader(GL_FRAGMENT_SHADER);
+	GLuint skybox_ver = glCreateShader(GL_VERTEX_SHADER);
+
+	char** skyboxVertexSource = loadShaderSource("skybox.vs.glsl");
+	char** skyboxFragmentSource = loadShaderSource("skybox.fs.glsl");
+
+	glShaderSource(skybox_ver, 1, skyboxVertexSource, NULL);
+	glShaderSource(skybox_frag, 1, skyboxFragmentSource, NULL);
+
+	freeShaderSource(skyboxVertexSource);
+	freeShaderSource(skyboxFragmentSource);
+
+	glCompileShader(skybox_ver);
+	glCompileShader(skybox_frag);
+
+	glAttachShader(skybox_prog, skybox_ver);
+	glAttachShader(skybox_prog, skybox_frag);
+
+	shaderLog(skybox_ver);
+	shaderLog(skybox_frag);
+
+	glLinkProgram(skybox_prog);
+	glUseProgram(skybox_prog);
+
+	uniforms.skybox.view_matrix = glGetUniformLocation(skybox_prog, "view_matrix");
+
+	glGenVertexArrays(1, &skybox_vao);
+	
+	/*-----------render program--------------*/
 	program = glCreateProgram();
 
 	GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -279,18 +333,49 @@ void My_Init()
 
 	glUseProgram(program);
 
+	TextureData envmap_data = loadPNG("mountaincube.png");
+	glGenTextures(1, &tex_envmap);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, tex_envmap);
+	for (int i = 0; i < 6; ++i)
+	{
+		glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA, envmap_data.width, envmap_data.height / 6, 0, GL_RGBA, GL_UNSIGNED_BYTE, envmap_data.data + i * (envmap_data.width * (envmap_data.height / 6) * sizeof(unsigned char) * 4));
+	}
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	delete[] envmap_data.data;
+
+	glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+
 	Load_Mesh();
-	//My_Reshape(600, 600);
 }
 
 void My_Display()
 {
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	static const GLfloat gray[] = { 0.2f, 0.2f, 0.2f, 1.0f };
+	static const GLfloat ones[] = { 1.0f };
+	
+	//glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	//glUseProgram(program);
+
+	view_matrix = lookAt(cameraPosition, cameraPosition + cameraDirection, cameraNormal);
+	sky_view = lookAt(cameraPosition, cameraPosition + sky_cameraDirection, cameraNormal);
+	mv_matrix = view_matrix * mat4(1.0f);
+
+	glClearBufferfv(GL_COLOR, 0, gray);
+	glClearBufferfv(GL_DEPTH, 0, ones);
+	glBindTexture(GL_TEXTURE_CUBE_MAP, tex_envmap);
+
+	glUseProgram(skybox_prog);
+	glBindVertexArray(skybox_vao);
+
+	glUniformMatrix4fv(uniforms.skybox.view_matrix, 1, GL_FALSE, value_ptr(transpose(sky_view)));
+
+	glDisable(GL_DEPTH_TEST);
+	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+	glEnable(GL_DEPTH_TEST);
+
 	glUseProgram(program);
-
-	mv_matrix = lookAt(cameraPosition, cameraPosition + cameraDirection, cameraNormal);
-	mv_matrix = mv_matrix * mat4(1.0f);
-
+	
 	glUniformMatrix4fv(um4mv, 1, GL_FALSE, value_ptr(mv_matrix));
 	glUniformMatrix4fv(um4p, 1, GL_FALSE, value_ptr(proj_matrix));
 	glActiveTexture(GL_TEXTURE0);
@@ -359,17 +444,30 @@ void My_Drag(int nowX, int nowY)
 
 	leftRight -= xOffset;
 	upDown -= yOffset;
+	
+	sky_leftRight += xOffset;
+	sky_upDown += yOffset;
 
 	if (upDown > 89.0f)
 		upDown = 89.0f;
 	if (upDown < -89.0f)
 		upDown = -89.0f;
 
+	if (sky_upDown > 89.0f)
+		sky_upDown = 89.0f;
+	if (sky_upDown < -89.0f)
+		sky_upDown = -89.0f;
+
 	vec3 dir;
 	dir.x = cos(radians(leftRight)) * cos(radians(upDown));
 	dir.y = sin(radians(upDown));
 	dir.z = sin(radians(leftRight)) * cos(radians(upDown));
 	cameraDirection = normalize(dir);
+
+	dir.x = cos(radians(sky_leftRight)) * cos(radians(sky_upDown));
+	dir.y = sin(radians(sky_upDown));
+	dir.z = sin(radians(sky_leftRight)) * cos(radians(sky_upDown));
+	sky_cameraDirection = normalize(dir);
 }
 
 void My_Keyboard(unsigned char key, int x, int y)
